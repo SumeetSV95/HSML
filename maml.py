@@ -32,7 +32,7 @@ class MAML:
         self.test_num_updates = test_num_updates
         self.sess = sess
         if FLAGS.task_embedding_type == 'rnn':
-            self.lstmae = LSTMAutoencoder(hidden_num=FLAGS.hidden_dim)
+            self.lstmae = LSTMAutoencoder(hidden_num=FLAGS.hidden_dim, elem_num=self.dim_input + self.dim_output)
         elif FLAGS.task_embedding_type == 'mean':
             self.lstmae = MeanAutoencoder(hidden_num=FLAGS.hidden_dim)
         self.tree = TreeLSTM(input_dim=FLAGS.hidden_dim, tree_hidden_dim=FLAGS.hidden_dim)
@@ -41,7 +41,7 @@ class MAML:
             self.loss_func = mse
             self.forward = self.forward_fc
             self.construct_weights = self.construct_fc_weights
-        elif FLAGS.datasource in ['omniglot', 'miniimagenet', 'multidataset', 'multidataset_leave_one_out']:
+        elif FLAGS.datasource in ['omniglot', 'miniimagenet', 'multidataset', 'multidataset_leave_one_out'] or 'mnist' in FLAGS.datasource:
             self.loss_func = xent
             self.classification = True
             if FLAGS.conv:
@@ -56,7 +56,12 @@ class MAML:
                 self.channels = 3
             else:
                 self.channels = 1
-            self.img_size = int(np.sqrt(self.dim_input / self.channels))
+            
+            if 'mnist' in FLAGS.datasource:
+                self.img_size = 28
+            else:
+                self.img_size = int(np.sqrt(self.dim_input / self.channels))
+
             self.image_embed = ImageEmbedding(hidden_num=FLAGS.task_embedding_num_filters, channels=self.channels,
                                               conv_initializer=tf.truncated_normal_initializer(stddev=0.04))
         else:
@@ -102,22 +107,37 @@ class MAML:
 
             def task_metalearn(inp, reuse=True):
                 """ Perform gradient descent for one task in the meta-batch. """
+                # This print statement will only appear once during graph construction, not per-iteration.
+                # It's a static part of the graph definition.
                 inputa, inputb, labela, labelb = inp
                 if FLAGS.datasource in ['sinusoid', 'mixture']:
+                    input_task_emb = tf.concat((inputa, labela), axis=-1)
+                elif 'mnist' in FLAGS.datasource:
+                    # For MNIST, the input is already flattened.
+                    # The labela is already one-hot from data_generator
                     input_task_emb = tf.concat((inputa, labela), axis=-1)
                 elif FLAGS.datasource in ['miniimagenet', 'omniglot', 'multidataset', 'multidataset_leave_one_out']:
                     if FLAGS.fix_embedding_sample != -1:
                         input_task_emb = self.image_embed.model(tf.reshape(inputa[:FLAGS.fix_embedding_sample],
                                                                            [-1, self.img_size, self.img_size,
                                                                             self.channels]))
+                        
+                        # The original code had depth=1 here. We will preserve that for existing datasets
+                        # and use the correct num_classes depth only for our new MNIST data.
+                        if 'mnist' in FLAGS.datasource:
+                            one_hot_depth = FLAGS.num_classes
+                        else:
+                            one_hot_depth = 1 # Keep original behavior
+
                         one_hot_labela = tf.squeeze(
-                            tf.one_hot(tf.to_int32(labela[:FLAGS.fix_embedding_sample]), depth=1, axis=-1))
+                            tf.one_hot(tf.to_int32(labela[:FLAGS.fix_embedding_sample]), depth=one_hot_depth, axis=-1))
                     else:
                         input_task_emb = self.image_embed.model(tf.reshape(inputa,
                                                                            [-1, self.img_size, self.img_size,
+                        
                                                                             self.channels]))
-                        one_hot_labela = tf.squeeze(
-                            tf.one_hot(tf.to_int32(labela), depth=1, axis=-1))
+                        # Reverting to original label processing logic as requested.
+                        one_hot_labela = tf.squeeze(tf.one_hot(tf.to_int32(labela), depth=1, axis=-1))
                     input_task_emb = tf.concat((input_task_emb, one_hot_labela), axis=-1)
 
                 task_embed_vec, task_emb_loss = self.lstmae.model(input_task_emb)
@@ -188,8 +208,10 @@ class MAML:
             out_dtype = [tf.float32, tf.float32, [tf.float32] * num_updates, tf.float32, [tf.float32] * num_updates]
             if self.classification:
                 out_dtype.extend([tf.float32, [tf.float32] * num_updates])
+            
             result = tf.map_fn(task_metalearn, elems=(self.inputa, self.inputb, self.labela, self.labelb),
                                dtype=out_dtype, parallel_iterations=FLAGS.meta_batch_size)
+            
             if self.classification:
                 emb_loss, outputas, outputbs, lossesa, lossesb, accuraciesa, accuraciesb = result
             else:
@@ -237,6 +259,7 @@ class MAML:
             tf.summary.scalar(prefix + 'Post-update loss, step ' + str(j + 1), total_losses2[j])
             if self.classification:
                 tf.summary.scalar(prefix + 'Post-update accuracy, step ' + str(j + 1), total_accuracies2[j])
+        
 
     ### Network construction functions (fc networks and conv networks)
     def construct_fc_weights(self):
@@ -281,8 +304,13 @@ class MAML:
                                            initializer=conv_initializer, dtype=dtype)
         weights['b4'] = tf.Variable(tf.zeros([self.dim_hidden]))
         if FLAGS.datasource in ['miniimagenet', 'multidataset', 'multidataset_leave_one_out']:
-            # assumes max pooling
-            weights['w5'] = tf.get_variable('w5', [self.dim_hidden * 5 * 5, self.dim_output],
+            # For 84x84 images, 4 max-pools result in a 6x6 feature map.
+            weights['w5'] = tf.get_variable('w5', [self.dim_hidden * 6 * 6, self.dim_output],
+                                            initializer=fc_initializer)
+            weights['b5'] = tf.Variable(tf.zeros([self.dim_output]), name='b5')
+        elif 'mnist' in FLAGS.datasource:
+            # For 28x28 images, 4 max-pools result in a 2x2 feature map.
+            weights['w5'] = tf.get_variable('w5', [self.dim_hidden * 2 * 2, self.dim_output],
                                             initializer=fc_initializer)
             weights['b5'] = tf.Variable(tf.zeros([self.dim_output]), name='b5')
         else:
@@ -298,7 +326,7 @@ class MAML:
         hidden2 = conv_block(hidden1, weights['conv2'], weights['b2'], reuse, scope + '1')
         hidden3 = conv_block(hidden2, weights['conv3'], weights['b3'], reuse, scope + '2')
         hidden4 = conv_block(hidden3, weights['conv4'], weights['b4'], reuse, scope + '3')
-        if FLAGS.datasource in ['miniimagenet', 'multidataset', 'multidataset_leave_one_out']:
+        if FLAGS.datasource in ['miniimagenet', 'multidataset', 'multidataset_leave_one_out'] or 'mnist' in FLAGS.datasource:
             hidden4 = tf.reshape(hidden4, [-1, np.prod([int(dim) for dim in hidden4.get_shape()[1:]])])
         else:
             hidden4 = tf.reduce_mean(hidden4, [1, 2])

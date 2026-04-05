@@ -1,84 +1,56 @@
+"""
+Script to find and resize all FGVCx Fungi images to 84x84.
+"""
+
+import numpy as np
+import os
 from PIL import Image
 import glob
-import os
-import shutil
 import random
-import numpy as np
-import ipdb
 
 np.random.seed(1)
 random.seed(2)
 
-image_path = '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/images/*/'
 
+def process_and_resize():
+    """
+    Finds all images in the dataset directory, and resizes them to 84x84.
+    """
+    # Define the base path to search in
+    search_path = '/home/sv6234/HSML/meta-dataset/FGVCx_Fungi/'
+    # Create recursive patterns for both lowercase and uppercase extensions
+    image_path_pattern_lower = os.path.join(search_path, '**', '*.jpg')
+    image_path_pattern_upper = os.path.join(search_path, '**', '*.JPG')
 
-def process():
-    all_images = glob.glob(image_path + '*')
+    # Find all images with both extensions and combine the lists
+    all_images_lower = glob.glob(image_path_pattern_lower, recursive=True)
+    all_images_upper = glob.glob(image_path_pattern_upper, recursive=True)
+    all_images = all_images_lower + all_images_upper
 
-    i = 0
+    print(f"Found {len(all_images)} images to process.")
+    if len(all_images) == 0:
+        print("Warning: No images found. Please check the path pattern and directory structure.")
+        print(f"Searching recursively in: {search_path}")
+        return
 
-    for image_file in all_images:
-        im = Image.open(image_file)
-        im = im.resize((84, 84), resample=Image.LANCZOS)
-        im.save(image_file)
-        i += 1
+    for i, image_file in enumerate(all_images):
+        try:
+            # Open the image
+            im = Image.open(image_file)
+            # Ensure image is RGB
+            im = im.convert('RGB')
+            # Resize the image
+            im = im.resize((84, 84), resample=Image.LANCZOS)
+            # Save the image, overwriting the original
+            im.save(image_file)
 
-        if i % 200 == 0:
-            print(i)
+            if (i + 1) % 500 == 0:
+                print(f"Processed {i + 1} / {len(all_images)} images.")
+        except Exception as e:
+            print(f"Could not process {image_file}: {e}")
 
-
-def select_folder():
-    path = '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/images/'
-    dirlist = os.listdir(path)
-    num_images = []
-    for eachdir in dirlist:
-        if len(os.listdir(path + eachdir)) >= 150:
-            num_images.append([eachdir, len(os.listdir(path + eachdir))])
-    all_folder_id = random.sample(range(len(num_images)), 100)
-    all_folder = [num_images[id] for id in all_folder_id]
-    random.shuffle(all_folder)
-    for i in range(64):
-        shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/train/')
-    for i in range(64, 80):
-        shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/val/')
-    for i in range(80, 100):
-        shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/test/')
-    # num_images = sorted(num_images, key=lambda x: x[1], reverse=True)
-    # print(len(num_images))
-
-
-def select_image():
-    folder = ['train', 'test', 'val']
-    for eachfolder in folder:
-        all_files = os.listdir('/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/{}/'.format(eachfolder))
-        for eachtype in all_files:
-            images = os.listdir('/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/{}/{}/'.format(eachfolder, eachtype))
-            random.shuffle(images)
-            images_id = random.sample(range(len(images)), 150)
-            new_images = [images[idx] for idx in images_id]
-            os.mkdir('/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/{}_new/{}/'.format(eachfolder, eachtype))
-            for idx_y in range(len(new_images)):
-                shutil.move('/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/{}/{}/{}'.format(eachfolder, eachtype,
-                                                                                         new_images[idx_y]),
-                            '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/{}_new/{}/'.format(eachfolder, eachtype))
-    # path = '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/images/'
-    # dirlist = os.listdir(path)
-    # num_images = []
-    # for eachdir in dirlist:
-    #     if len(os.listdir(path + eachdir)) >= 150:
-    #         num_images.append([eachdir, len(os.listdir(path + eachdir))])
-    # all_folder_id = random.sample(range(len(num_images)), 100)
-    # all_folder = [num_images[id] for id in all_folder_id]
-    # random.shuffle(all_folder)
-    # for i in range(64):
-    #     shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/train/')
-    # for i in range(64, 80):
-    #     shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/val/')
-    # for i in range(80, 100):
-    #     shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/FGVCx_Fungi/test/')
-    # num_images = sorted(num_images, key=lambda x: x[1], reverse=True)
-    # print(len(num_images))
+    print("Finished processing all images.")
 
 
 if __name__ == '__main__':
-    select_folder()
+    process_and_resize()

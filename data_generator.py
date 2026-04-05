@@ -4,10 +4,13 @@ import os
 import random
 import tensorflow as tf
 import ipdb
+import pickle
+import torch # ADDED for dynamic loading
+import matplotlib.pyplot as plt
 
 from tensorflow.python.platform import flags
 from utils import get_images
-import matplotlib.pyplot as plt
+
 
 FLAGS = flags.FLAGS
 
@@ -33,6 +36,15 @@ class DataGenerator(object):
             self.input_range = config.get('input_range', [-5.0, 5.0])
             self.dim_input = 1
             self.dim_output = 1
+
+        elif 'mnist' in FLAGS.datasource:
+            # MODIFIED BLOCK FOR MNIST
+            self.num_classes = 10 # 10 digits
+            self.dim_input = 784 # 28*28
+            self.dim_output = self.num_classes
+            self.img_size = config.get('img_size', (28, 28))
+            # Load the raw PyTorch data directly for dynamic sampling
+            self._load_mnist_pt_data()
 
         elif FLAGS.datasource == 'mixture':
             self.generate = self.generate_mixture_batch
@@ -171,6 +183,73 @@ class DataGenerator(object):
 
         else:
             raise ValueError('Unrecognized data source')
+
+    def _load_mnist_pt_data(self):
+        """Loads the original MNIST .pt file into memory and converts to NumPy."""
+        # REPLACED FUNCTION: This now loads the .pt file directly
+        data_folder = os.path.join(FLAGS.datadir, 'data', 'rotated_mnist')
+        pt_path = os.path.join(data_folder, 'data', 'mnist_rotations.pt')
+        print(f"Loading original MNIST data from {pt_path} for dynamic sampling...")
+        train_dataset_pt, test_dataset_pt = torch.load(pt_path)
+        
+        # Convert PyTorch Tensors to NumPy arrays immediately after loading.
+        # This correctly preserves the specific angles from the file.
+        self.train_tasks = [(angle, x.numpy(), y.numpy()) for angle, x, y in train_dataset_pt]
+        self.val_tasks = [(angle, x.numpy(), y.numpy()) for angle, x, y in test_dataset_pt]
+        print(f"Loaded {len(self.train_tasks)} training tasks and {len(self.val_tasks)} validation tasks.")
+        train_angles = [round(task[0], 2) for task in self.train_tasks]
+        print(f"Using the following {len(train_angles)} training angles from file: {train_angles}")
+
+
+    def make_data_tensor_mnist(self, train=True):
+        """
+        Creates a data tensor for MNIST by DYNAMICALLY sampling from the full data pools.
+        """
+        # REPLACED FUNCTION: This now performs dynamic sampling
+        if train:
+            tasks = self.train_tasks
+            k_shot = FLAGS.update_batch_size
+        else:
+            tasks = self.val_tasks
+            k_shot = FLAGS.update_batch_size
+        
+        k_query = 15 # A standard query size for evaluation
+
+        s_x_list, s_y_list, q_x_list, q_y_list = [], [], [], []
+
+        for _ in range(self.batch_size):
+            # 1. Sample a random task (which includes the correct angle)
+            angle, all_x, all_y = random.choice(tasks)
+            
+            support_x, query_x = [], []
+            support_y, query_y = [], []
+
+            # 2. For each class, sample a FRESH support and query set
+            for cls in range(self.num_classes):
+                class_indices = np.where(all_y == cls)[0]
+                sampled_indices = np.random.choice(class_indices, size=k_shot + k_query, replace=False)
+                
+                support_x.extend(all_x[sampled_indices[:k_shot]])
+                support_y.extend(all_y[sampled_indices[:k_shot]])
+                query_x.extend(all_x[sampled_indices[k_shot:]])
+                query_y.extend(all_y[sampled_indices[k_shot:]])
+            
+            s_x_list.append(np.array(support_x))
+            s_y_list.append(np.array(support_y))
+            q_x_list.append(np.array(query_x))
+            q_y_list.append(np.array(query_y))
+
+        # Convert to tensors
+        inputa = tf.convert_to_tensor(np.array(s_x_list), dtype=tf.float32)
+        labela = tf.convert_to_tensor(np.array(s_y_list), dtype=tf.float32)
+        inputb = tf.convert_to_tensor(np.array(q_x_list), dtype=tf.float32)
+        labelb = tf.convert_to_tensor(np.array(q_y_list), dtype=tf.float32)
+
+        # Reshape labels to be one-hot
+        labela = tf.one_hot(tf.cast(labela, dtype=tf.int32), self.num_classes)
+        labelb = tf.one_hot(tf.cast(labelb, dtype=tf.int32), self.num_classes)
+
+        return inputa, labela, inputb, labelb
 
     def make_data_tensor(self, train=True):
         if train:

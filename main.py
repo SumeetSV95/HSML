@@ -5,7 +5,7 @@ import random
 import matplotlib.pyplot as plt
 import tensorflow as tf
 
-tf.set_random_seed(1234)
+tf.compat.v1.set_random_seed(1234)
 from data_generator import DataGenerator
 from maml import MAML
 from tensorflow.python.platform import flags
@@ -13,7 +13,7 @@ from tensorflow.python.platform import flags
 FLAGS = flags.FLAGS
 
 ## Dataset/method options
-flags.DEFINE_string('datasource', 'sinusoid', 'sinusoid or omniglot or miniimagenet or mixture or multidataset or multidataset_leave_one_out')
+flags.DEFINE_string('datasource', 'sinusoid', 'sinusoid or omniglot or miniimagenet or mixture or multidataset or multidataset_leave_one_out or mnist_rotations or mnist_permutations or mnist_manypermutations')
 flags.DEFINE_integer('leave_one_out_id',-1,'id of leave one out')
 flags.DEFINE_integer('test_dataset', -1,
                      'which dataset to be test: 0: bird, 1: texture, 2: aircraft, 3: fungi, -1 is test all')
@@ -43,7 +43,7 @@ flags.DEFINE_integer('num_filters', 64, 'number of filters for conv nets -- 32 f
 flags.DEFINE_bool('conv', True, 'whether or not to use a convolutional network, only applicable in some cases')
 flags.DEFINE_bool('max_pool', False, 'Whether or not to use max pooling rather than strided convolutions')
 flags.DEFINE_bool('stop_grad', False, 'if True, do not use second derivatives in meta-optimization (for speed)')
-flags.DEFINE_float('emb_loss_weight', 0.0, 'the weight of autoencoder')
+flags.DEFINE_float('emb_loss_weight', 0.1, 'the weight of autoencoder')
 flags.DEFINE_string('emb_type', 'sigmoid', 'sigmoid')
 flags.DEFINE_bool('no_val', False, 'if true, there are no validation set of Omniglot dataset')
 flags.DEFINE_integer('tree_type', 1, 'select the tree type: 1 or 2')
@@ -83,6 +83,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
     print('Done initializing, starting training.')
 
     prelosses, postlosses, embedlosses = [], [], []
+    preaccs, postaccs = [], []
 
     num_classes = data_generator.num_classes  # for classification, 1 otherwise
 
@@ -112,10 +113,16 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
 
         result = sess.run(input_tensors, feed_dict)
 
-        if np.isnan(result[-2]) == False and np.isnan(result[-2]) == False and np.isnan(result[2]) == False:
-            prelosses.append(result[-2])
-            postlosses.append(result[-1])
-            embedlosses.append(result[2])
+        # FIX: Use the correct indices for the loss values from the result list.
+        # result[0] is the metatrain_op (None), result[1] is the summary (string).
+        # The losses start from index 2.
+        if np.isnan(result[3]) == False and np.isnan(result[4]) == False and np.isnan(result[2]) == False:
+            prelosses.append(result[3]) # pre-update loss
+            postlosses.append(result[4]) # post-update loss
+            embedlosses.append(result[2]) # embedding loss
+            if model.classification:
+                preaccs.append(result[5])
+                postaccs.append(result[6])
 
         if itr % SUMMARY_INTERVAL == 0:
             if FLAGS.log:
@@ -126,12 +133,17 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
                 print_str = 'Pretrain Iteration ' + str(itr)
             else:
                 print_str = 'Iteration ' + str(itr - FLAGS.pretrain_iterations)
-            std = np.std(postlosses, 0)
-            ci95 = 1.96 * std / np.sqrt(PRINT_INTERVAL)
-            print_str += ': preloss: ' + str(np.mean(prelosses)) + ', postloss: ' + str(
-                np.mean(postlosses)) + ', embedding loss: ' + str(np.mean(embedlosses)) + ', confidence: ' + str(ci95)
+            
+            if model.classification:
+                print_str += ': preacc: ' + str(np.mean(preaccs)) + ', postacc: ' + str(np.mean(postaccs)) + ', embedding loss: ' + str(np.mean(embedlosses))
+            else:
+                std = np.std(postlosses, 0)
+                ci95 = 1.96 * std / np.sqrt(PRINT_INTERVAL)
+                print_str += ': preloss: ' + str(np.mean(prelosses)) + ', postloss: ' + str(
+                    np.mean(postlosses)) + ', embedding loss: ' + str(np.mean(embedlosses)) + ', confidence: ' + str(ci95)
             print(print_str)
             prelosses, postlosses, embedlosses = [], [], []
+            preaccs, postaccs = [], []
 
         if (itr != 0) and itr % SAVE_INTERVAL == 0:
             saver.save(sess, FLAGS.logdir + '/' + exp_string + '/model' + str(itr))
@@ -228,7 +240,7 @@ def main():
         else:
             test_num_updates = 10
     else:
-        if FLAGS.datasource in ['miniimagenet', 'multidataset', 'multidataset_leave_one_out']:
+        if FLAGS.datasource in ['miniimagenet', 'multidataset', 'multidataset_leave_one_out'] or 'mnist' in FLAGS.datasource:
             if FLAGS.train == True:
                 test_num_updates = 1  # eval on at least one update during training
             else:
@@ -256,6 +268,10 @@ def main():
                 else:
                     data_generator = DataGenerator(FLAGS.update_batch_size * 2,
                                                    FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+            elif 'mnist' in FLAGS.datasource:
+                # For MNIST, num_samples_per_class is the K in K-shot, defined by the data files.
+                # We pass update_batch_size which should match K.
+                data_generator = DataGenerator(FLAGS.update_batch_size, FLAGS.meta_batch_size)
             else:
                 data_generator = DataGenerator(FLAGS.update_batch_size * 2,
                                                FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
@@ -263,39 +279,52 @@ def main():
     dim_output = data_generator.dim_output
     dim_input = data_generator.dim_input
 
-    if FLAGS.datasource in ['miniimagenet', 'omniglot', 'multidataset', 'multidataset_leave_one_out']:
+    if FLAGS.datasource in ['miniimagenet', 'omniglot', 'multidataset', 'multidataset_leave_one_out'] or 'mnist' in FLAGS.datasource:
         tf_data_load = True
         num_classes = data_generator.num_classes
+        input_tensors = None
+        metaval_input_tensors = None
 
         if FLAGS.train:  # only construct training model if needed
             random.seed(5)
-            if FLAGS.datasource in ['miniimagenet', 'omniglot']:
-                image_tensor, label_tensor = data_generator.make_data_tensor()
-            elif FLAGS.datasource == 'multidataset':
-                image_tensor, label_tensor = data_generator.make_data_tensor_multidataset()
-            elif FLAGS.datasource == 'multidataset_leave_one_out':
-                image_tensor, label_tensor = data_generator.make_data_tensor_multidataset_leave_one_out()
-            inputa = tf.slice(image_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
-            inputb = tf.slice(image_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
-            labela = tf.slice(label_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
-            labelb = tf.slice(label_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
-            input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
+            if 'mnist' in FLAGS.datasource:
+                inputa, labela, inputb, labelb = data_generator.make_data_tensor_mnist(train=True)
+                input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
+            else:  # For omniglot, miniimagenet, multidataset
+                if FLAGS.datasource in ['miniimagenet', 'omniglot']:
+                    image_tensor, label_tensor = data_generator.make_data_tensor()
+                elif FLAGS.datasource == 'multidataset':
+                    image_tensor, label_tensor = data_generator.make_data_tensor_multidataset()
+                elif FLAGS.datasource == 'multidataset_leave_one_out':
+                    image_tensor, label_tensor = data_generator.make_data_tensor_multidataset_leave_one_out()
+                
+                inputa = tf.slice(image_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
+                inputb = tf.slice(image_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
+                labela = tf.slice(label_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
+                labelb = tf.slice(label_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
+                input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
 
         random.seed(6)
-        if FLAGS.datasource in ['miniimagenet', 'omniglot']:
-            image_tensor, label_tensor = data_generator.make_data_tensor(train=False)
-        elif FLAGS.datasource == 'multidataset':
-            image_tensor, label_tensor = data_generator.make_data_tensor_multidataset(train=False)
-        elif FLAGS.datasource == 'multidataset_leave_one_out':
-            image_tensor, label_tensor = data_generator.make_data_tensor_multidataset_leave_one_out(train=False)
-        inputa = tf.slice(image_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
-        inputb = tf.slice(image_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
-        labela = tf.slice(label_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
-        labelb = tf.slice(label_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
-        metaval_input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
+        if 'mnist' in FLAGS.datasource:
+            val_inputa, val_labela, val_inputb, val_labelb = data_generator.make_data_tensor_mnist(train=False)
+            metaval_input_tensors = {'inputa': val_inputa, 'inputb': val_inputb, 'labela': val_labela, 'labelb': val_labelb}
+        else:  # For omniglot, miniimagenet, multidataset
+            if FLAGS.datasource in ['miniimagenet', 'omniglot']:
+                val_image_tensor, val_label_tensor = data_generator.make_data_tensor(train=False)
+            elif FLAGS.datasource == 'multidataset':
+                val_image_tensor, val_label_tensor = data_generator.make_data_tensor_multidataset(train=False)
+            elif FLAGS.datasource == 'multidataset_leave_one_out':
+                val_image_tensor, val_label_tensor = data_generator.make_data_tensor_multidataset_leave_one_out(train=False)
+
+            val_inputa = tf.slice(val_image_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
+            val_inputb = tf.slice(val_image_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
+            val_labela = tf.slice(val_label_tensor, [0, 0, 0], [-1, num_classes * FLAGS.update_batch_size, -1])
+            val_labelb = tf.slice(val_label_tensor, [0, num_classes * FLAGS.update_batch_size, 0], [-1, -1, -1])
+            metaval_input_tensors = {'inputa': val_inputa, 'inputb': val_inputb, 'labela': val_labela, 'labelb': val_labelb}
     else:
         tf_data_load = False
         input_tensors = None
+        metaval_input_tensors = None
 
     model = MAML(sess, dim_input, dim_output, test_num_updates=test_num_updates)
 

@@ -64,7 +64,7 @@ class TreeLSTM(object):
 
     def model(self, inputs):
 
-        if FLAGS.datasource == 'multidataset' or FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'multidataset_leave_one_out':
+        if FLAGS.datasource in ['multidataset', 'miniimagenet', 'multidataset_leave_one_out', 'mnist_rotations', 'mnist_permutations', 'mnist_manypermutations']:
             sigma = 10.0
         elif FLAGS.datasource in ['sinusoid', 'mixture']:
             sigma = 2.0

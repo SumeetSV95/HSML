@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.python.ops.rnn_cell import GRUCell
+from tensorflow.python.ops.rnn_cell_impl import GRUCell
 
 from tensorflow.python.platform import flags
 
@@ -9,16 +9,21 @@ import ipdb
 
 
 class LSTMAutoencoder(object):
-    def __init__(self, hidden_num, cell=None, reverse=True, decode_without_input=False):
+    def __init__(self, hidden_num, elem_num, inputs=None, cell=None, optimizer=None, reverse=True,
+                 decode_without_input=False):
+        self.batch_num = FLAGS.meta_batch_size
+        self.hidden_num = hidden_num
+        self.elem_num = elem_num  # This is the only line to add here
+
         if cell is None:
-            self._enc_cell = GRUCell(hidden_num, name='encoder_cell')
-            self._dec_cell = GRUCell(hidden_num, name='decoder_cell')
+            self._enc_cell = GRUCell(self.hidden_num, name='encoder_cell')
+            self._dec_cell = GRUCell(self.hidden_num, name='decoder_cell')
         else:
             self._enc_cell = cell
             self._dec_cell = cell
         self.reverse = reverse
         self.decode_without_input = decode_without_input
-        self.hidden_num = hidden_num
+        
 
         if FLAGS.datasource in ['sinusoid', 'mixture']:
             self.elem_num_init = 2

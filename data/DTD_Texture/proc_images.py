@@ -20,23 +20,32 @@ np.random.seed(0)
 random.seed(1)
 
 def Process():
-    image_path = '/home/huaxiuyao/Data/meta-dataset/DTD_Texture/dtd/images/*/'
+    # Corrected path to search in train, val, and test directories
+    image_path_pattern = '/home/sv6234/HSML/meta-dataset/DTD_Texture/*/*/*.jpg'
+    all_images = glob.glob(image_path_pattern)
 
-    all_images = glob.glob(image_path + '*')
+    print(f"Found {len(all_images)} images to process.")
+    if len(all_images) == 0:
+        print("Warning: No images found. Please check the path pattern and directory structure.")
+        print(f"Searching in: {image_path_pattern}")
+        return
 
-    i = 0
+    for i, image_file in enumerate(all_images):
+        try:
+            im = Image.open(image_file)
+            im = im.convert('RGB')
+            im = im.resize((84,84), resample=Image.LANCZOS)
+            im.save(image_file)
 
-    for image_file in all_images:
-        im = Image.open(image_file)
-        im = im.resize((84,84), resample=Image.LANCZOS)
-        im.save(image_file)
-        i += 1
+            if (i + 1) % 200 == 0:
+                print(f"Processed {i + 1} / {len(all_images)}")
+        except Exception as e:
+            print(f"Could not process {image_file}: {e}")
 
-        if i % 200 == 0:
-            print(i)
+    print("Finished processing all images.")
 
 def select_image():
-    path = '/home/huaxiuyao/Data/meta-dataset/DTD_Texture/images/'
+    path = '/home/sv6234/HSML/meta-dataset/DTD_Texture/images/'
     dirlist = os.listdir(path)
     num_images = []
     for eachdir in dirlist:
@@ -45,12 +54,13 @@ def select_image():
     all_folder = [num_images[id] for id in all_folder_id]
     random.shuffle(all_folder)
     for i in range(30):
-        shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/DTD_Texture/train/')
+        shutil.move(path + all_folder[i][0], '/home/sv6234/HSML/meta-dataset/DTD_Texture/train/')
     for i in range(30, 37):
-        shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/DTD_Texture/val/')
+        shutil.move(path + all_folder[i][0], '/home/sv6234/HSML/meta-dataset/DTD_Texture/val/')
     for i in range(37, 47):
-        shutil.move(path + all_folder[i][0], '/home/huaxiuyao/Data/meta-dataset/DTD_Texture/test/')
+        shutil.move(path + all_folder[i][0], '/home/sv6234/HSML/meta-dataset/DTD_Texture/test/')
     # num_images = sorted(num_images, key=lambda x: x[1], reverse=True)
 
 if __name__=='__main__':
-    select_image()
+    # select_image()
+    Process()
